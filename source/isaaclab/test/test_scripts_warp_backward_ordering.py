@@ -22,6 +22,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 _ENTRY_SCRIPTS = [
     "scripts/reinforcement_learning/train.py",
     "scripts/reinforcement_learning/play.py",
+    "scripts/reinforcement_learning/evaluate.py",
     "scripts/environments/zero_agent.py",
     "scripts/environments/random_agent.py",
 ]

@@ -44,6 +44,7 @@ class ForgeEnv(FactoryEnv):
         self.force_sensor_body_idx = self._robot.backend_body_names.index("force_sensor")
         self.force_sensor_smooth = torch.zeros((self.num_envs, 6), device=self.device)
         self.force_sensor_world_smooth = torch.zeros((self.num_envs, 6), device=self.device)
+        self._episode_force_statistics = forge_utils._EpisodeForceStatistics(self.num_envs, self.device)
 
         # Set nominal dynamics parameters for randomization.
         self.default_gains = torch.tensor(self.cfg.ctrl.default_task_prop_gains, device=self.device).repeat(
@@ -252,6 +253,7 @@ class ForgeEnv(FactoryEnv):
         rot_error = torch.abs(self.delta_yaw) / self.cfg.ctrl.rot_action_threshold[0]
         # Contact penalty.
         contact_force = torch.linalg.norm(self.force_sensor_smooth[:, 0:3], ord=2, dim=-1, keepdim=False)
+        self._episode_force_statistics.update(contact_force)
         contact_penalty = torch.nn.functional.relu(contact_force - self.contact_penalty_thresholds)
         # Add success prediction rewards.
         check_rot = self.cfg_task.name == "nut_thread"
@@ -349,6 +351,7 @@ class ForgeEnv(FactoryEnv):
     def _reset_buffers(self, env_ids):
         """Reset additional logging metrics."""
         super()._reset_buffers(env_ids)
+        self._episode_force_statistics.reset(env_ids)
         # Reset success pred metrics.
         for thresh in [0.5, 0.6, 0.7, 0.8, 0.9]:
             self.first_pred_success_tx[thresh][env_ids] = 0
@@ -357,6 +360,9 @@ class ForgeEnv(FactoryEnv):
         """Log metrics to evaluate success prediction performance."""
         for rew_name, rew in rew_dict.items():
             self.extras[f"logs_rew_{rew_name}"] = rew.mean()
+
+        if torch.any(self.reset_buf):
+            self._log_force_episode_metrics()
 
         for thresh, first_success_tx in self.first_pred_success_tx.items():
             curr_predicted_success = policy_success_pred > thresh
@@ -398,3 +404,10 @@ class ForgeEnv(FactoryEnv):
                 et_recall = true_success_preds.sum() / num_true_success
                 if num_true_success > 0:
                     self.extras[f"early_term_recall/{thresh}"] = et_recall
+
+    def _log_force_episode_metrics(self) -> None:
+        """Log mean and peak smoothed force magnitudes for completed episodes."""
+        completed_env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
+        self.extras.setdefault("log", {}).update(
+            self._episode_force_statistics.report(self.episode_length_buf, completed_env_ids)
+        )

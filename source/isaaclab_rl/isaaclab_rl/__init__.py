@@ -17,7 +17,7 @@ the initialized environment instance to the wrapper constructor. However, since 
 expect different input and output data structures, their wrapper classes are not compatible with each other.
 Thus, they should always be used in conjunction with the respective learning framework.
 
-The package also provides the unified training and playback entrypoints used by the
+The package also provides the unified training, playback, and evaluation entrypoints used by the
 ``scripts/reinforcement_learning`` executables. See :mod:`isaaclab_rl.entrypoints` for details.
 """
 
@@ -25,7 +25,7 @@ import importlib.metadata
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .entrypoints import PlaybackRequest, SimpleAgentRequest, TrainingRequest
+    from .entrypoints import EvaluationRequest, PlaybackRequest, SimpleAgentRequest, TrainingRequest
 
 try:
     __version__ = importlib.metadata.version("isaaclab_rl")
@@ -33,11 +33,14 @@ except importlib.metadata.PackageNotFoundError:
     __version__ = "0.0.0"
 __all__ = [
     "PlaybackRequest",
+    "EvaluationRequest",
     "SimpleAgentRequest",
     "TrainingRequest",
+    "evaluate",
     "play",
     "random_agent",
     "run_play_cli",
+    "run_evaluate_cli",
     "run_random_agent_cli",
     "run_train_cli",
     "run_train_multigpu_cli",

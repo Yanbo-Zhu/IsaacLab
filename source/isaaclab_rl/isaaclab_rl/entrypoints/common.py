@@ -564,7 +564,7 @@ def show_run_summary(
         args_cli: Parsed command-line arguments.
         env_cfg: Concrete Isaac Lab environment config.
         library: Reinforcement learning library running the workflow.
-        action: Workflow name, either ``"train"`` or ``"play"``.
+        action: Workflow name, such as ``"train"``, ``"play"``, or ``"evaluate"``.
     """
     device = getattr(args_cli, "device", None) or env_cfg.sim.device
     num_envs = getattr(args_cli, "num_envs", None) or env_cfg.scene.num_envs

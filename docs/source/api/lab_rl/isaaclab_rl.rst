@@ -18,6 +18,10 @@ Unified Entrypoints
    :members:
    :show-inheritance:
 
+.. autoclass:: isaaclab_rl.entrypoints.EvaluationRequest
+   :members:
+   :show-inheritance:
+
 .. autoclass:: isaaclab_rl.entrypoints.SimpleAgentRequest
    :members:
    :show-inheritance:
@@ -26,6 +30,8 @@ Unified Entrypoints
 
 .. autofunction:: isaaclab_rl.entrypoints.play
 
+.. autofunction:: isaaclab_rl.entrypoints.evaluate
+
 .. autofunction:: isaaclab_rl.entrypoints.zero_agent
 
 .. autofunction:: isaaclab_rl.entrypoints.random_agent
@@ -33,6 +39,8 @@ Unified Entrypoints
 .. autofunction:: isaaclab_rl.entrypoints.run_train_cli
 
 .. autofunction:: isaaclab_rl.entrypoints.run_play_cli
+
+.. autofunction:: isaaclab_rl.entrypoints.run_evaluate_cli
 
 .. autofunction:: isaaclab_rl.entrypoints.run_zero_agent_cli
 

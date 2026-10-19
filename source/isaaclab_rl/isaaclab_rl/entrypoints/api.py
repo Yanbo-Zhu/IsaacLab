@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from .dispatch import run_play_cli, run_random_agent_cli, run_train_cli, run_zero_agent_cli
+from .dispatch import run_evaluate_cli, run_play_cli, run_random_agent_cli, run_train_cli, run_zero_agent_cli
 
 BackendName = Literal["rl_games", "rlinf", "rsl_rl", "sb3", "skrl"]
 
@@ -81,6 +81,37 @@ class PlaybackRequest:
 
 
 @dataclass(frozen=True)
+class EvaluationRequest:
+    """Parameters shared by fixed-episode checkpoint evaluation workflows.
+
+    Args:
+        backend: Reinforcement learning backend to run. Only ``"rl_games"`` is currently supported.
+        task: Registered Gym task identifier.
+        checkpoint: Checkpoint path to evaluate.
+        num_episodes: Completed trajectories to collect per environment.
+        agent: Optional task agent configuration entry point.
+        num_envs: Number of environments to simulate.
+        seed: Environment and agent seed.
+        device: Simulation device identifier.
+        video: Whether to record evaluation video.
+        backend_args: Backend-specific command-line arguments.
+        hydra_args: Hydra overrides and typed preset selectors.
+    """
+
+    backend: Literal["rl_games"]
+    task: str
+    checkpoint: str
+    num_episodes: int
+    agent: str | None = None
+    num_envs: int | None = None
+    seed: int | None = None
+    device: str | None = None
+    video: bool = False
+    backend_args: tuple[str, ...] = field(default_factory=tuple)
+    hydra_args: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
 class SimpleAgentRequest:
     """Parameters shared by the checkpoint-free playback workflows.
 
@@ -121,6 +152,18 @@ def play(request: PlaybackRequest) -> int:
         Process exit code.
     """
     return run_play_cli(_playback_argv(request))
+
+
+def evaluate(request: EvaluationRequest) -> int:
+    """Run a fixed-episode checkpoint evaluation workflow.
+
+    Args:
+        request: Typed evaluation parameters.
+
+    Returns:
+        Process exit code.
+    """
+    return run_evaluate_cli(_evaluation_argv(request))
 
 
 def zero_agent(request: SimpleAgentRequest) -> int:
@@ -166,6 +209,27 @@ def _training_argv(request: TrainingRequest) -> list[str]:
 def _playback_argv(request: PlaybackRequest) -> list[str]:
     argv = ["--rl_library", request.backend, "--task", request.task]
     _append_value(argv, "--checkpoint", request.checkpoint)
+    _append_value(argv, "--agent", request.agent)
+    _append_value(argv, "--num_envs", request.num_envs)
+    _append_value(argv, "--seed", request.seed)
+    _append_value(argv, "--device", request.device)
+    if request.video:
+        argv.append("--video")
+    return argv + list(request.backend_args) + list(request.hydra_args)
+
+
+def _evaluation_argv(request: EvaluationRequest) -> list[str]:
+    """Adapt a typed evaluation request into unified CLI arguments."""
+    argv = [
+        "--rl_library",
+        request.backend,
+        "--task",
+        request.task,
+        "--checkpoint",
+        request.checkpoint,
+        "--num_episodes",
+        str(request.num_episodes),
+    ]
     _append_value(argv, "--agent", request.agent)
     _append_value(argv, "--num_envs", request.num_envs)
     _append_value(argv, "--seed", request.seed)

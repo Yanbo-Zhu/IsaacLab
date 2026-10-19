@@ -15,7 +15,7 @@ import types
 import gymnasium as gym
 import pytest
 
-from isaaclab_rl.entrypoints import PlaybackRequest, TrainingRequest, api, dispatch
+from isaaclab_rl.entrypoints import EvaluationRequest, PlaybackRequest, TrainingRequest, api, dispatch
 
 
 def test_train_request_adapts_typed_parameters_to_cli(monkeypatch) -> None:
@@ -130,6 +130,47 @@ def test_play_request_uses_unified_checkpoint_argument(monkeypatch) -> None:
     ]
 
 
+def test_evaluation_request_adapts_fixed_episode_parameters_to_cli(monkeypatch) -> None:
+    """Evaluation requests forward checkpoint and per-environment episode count."""
+    received: list[str] = []
+
+    def fake_run_evaluate_cli(argv: list[str]) -> int:
+        received.extend(argv)
+        return 0
+
+    monkeypatch.setattr(api, "run_evaluate_cli", fake_run_evaluate_cli)
+
+    api.evaluate(
+        EvaluationRequest(
+            backend="rl_games",
+            task="IsaacContrib-Forge-PegInsert-Direct",
+            checkpoint="/tmp/Forge.pth",
+            num_episodes=100,
+            num_envs=1,
+            seed=0,
+            video=True,
+            hydra_args=("agent.params.config.player.deterministic=True",),
+        )
+    )
+
+    assert received == [
+        "--rl_library",
+        "rl_games",
+        "--task",
+        "IsaacContrib-Forge-PegInsert-Direct",
+        "--checkpoint",
+        "/tmp/Forge.pth",
+        "--num_episodes",
+        "100",
+        "--num_envs",
+        "1",
+        "--seed",
+        "0",
+        "--video",
+        "agent.params.config.player.deterministic=True",
+    ]
+
+
 def test_train_dispatches_selected_backend(monkeypatch) -> None:
     """The unified training dispatcher forwards only backend arguments."""
     received: dict[str, object] = {}
@@ -142,6 +183,25 @@ def test_train_dispatches_selected_backend(monkeypatch) -> None:
     assert dispatch.run_train_cli(["--rl_library", "rsl_rl", "--task", "Isaac-Cartpole"]) == 0
     assert received == {
         "module_name": "isaaclab_rl.entrypoints.backends.train_rsl_rl",
+        "argv": ["--task", "Isaac-Cartpole"],
+        "run_as_script": False,
+    }
+
+
+def test_evaluate_dispatches_only_rl_games(monkeypatch) -> None:
+    """The evaluation dispatcher routes to its inference-only RL-Games backend."""
+    received: dict[str, object] = {}
+    monkeypatch.setattr(
+        dispatch,
+        "_run_backend",
+        lambda module_name, argv, *, run_as_script: received.update(
+            module_name=module_name, argv=argv, run_as_script=run_as_script
+        ),
+    )
+
+    assert dispatch.run_evaluate_cli(["--rl_library", "rl_games", "--task", "Isaac-Cartpole"]) == 0
+    assert received == {
+        "module_name": "isaaclab_rl.entrypoints.backends.evaluate_rl_games",
         "argv": ["--task", "Isaac-Cartpole"],
         "run_as_script": False,
     }

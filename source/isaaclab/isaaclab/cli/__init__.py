@@ -54,6 +54,13 @@ def play(args: list[str] | None = None) -> None:
     run_python_command(ISAACLAB_ROOT / "scripts" / "reinforcement_learning" / "play.py", args, check=True)
 
 
+def evaluate(args: list[str] | None = None) -> None:
+    """Run the unified reinforcement learning checkpoint evaluation script."""
+    if args is None:
+        args = sys.argv[1:]
+    run_python_command(ISAACLAB_ROOT / "scripts" / "reinforcement_learning" / "evaluate.py", args, check=True)
+
+
 def zero_agent(args: list[str] | None = None) -> None:
     """Run an environment with a zero-action agent."""
     if args is None:
@@ -118,6 +125,7 @@ def cli() -> None:
         "train": train,
         "train_multigpu": train_multigpu,
         "play": play,
+        "evaluate": evaluate,
         "zero_agent": zero_agent,
         "random_agent": random_agent,
     }
@@ -142,6 +150,7 @@ def cli() -> None:
             "  train           Run scripts/reinforcement_learning/train.py\n"
             "  train_multigpu  Run scripts/reinforcement_learning/train_multigpu.py\n"
             "  play            Run scripts/reinforcement_learning/play.py\n"
+            "  evaluate        Run scripts/reinforcement_learning/evaluate.py\n"
             "  zero_agent      Run scripts/environments/zero_agent.py\n"
             "  random_agent    Run scripts/environments/random_agent.py\n"
             "  teleop          Run a live teleoperation, demo recording, or demo replay workflow"

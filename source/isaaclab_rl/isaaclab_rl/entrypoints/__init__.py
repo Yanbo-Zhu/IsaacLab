@@ -3,10 +3,10 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Unified train and play entrypoints for Isaac Lab reinforcement learning workflows.
+"""Unified train, play, and evaluation entrypoints for Isaac Lab reinforcement learning workflows.
 
-The :func:`train` and :func:`play` functions accept typed requests, while
-:func:`run_train_cli` and :func:`run_play_cli` dispatch raw command-line arguments.
+The :func:`train`, :func:`play`, and :func:`evaluate` functions accept typed requests, while
+:func:`run_train_cli`, :func:`run_play_cli`, and :func:`run_evaluate_cli` dispatch raw command-line arguments.
 Both select the backend implementation via the ``--rl_library`` argument or the
 :attr:`TrainingRequest.backend` field.
 
@@ -23,17 +23,31 @@ Example:
     train(TrainingRequest(backend="rsl_rl", task="Isaac-Cartpole", max_iterations=100))
 """
 
-from .api import BackendName, PlaybackRequest, SimpleAgentRequest, TrainingRequest, play, random_agent, train, zero_agent
-from .dispatch import run_play_cli, run_random_agent_cli, run_train_cli, run_zero_agent_cli
+from .api import (
+    BackendName,
+    EvaluationRequest,
+    PlaybackRequest,
+    SimpleAgentRequest,
+    TrainingRequest,
+    evaluate,
+    play,
+    random_agent,
+    train,
+    zero_agent,
+)
+from .dispatch import run_evaluate_cli, run_play_cli, run_random_agent_cli, run_train_cli, run_zero_agent_cli
 from .multigpu import run_train_multigpu_cli
 
 __all__ = [
     "BackendName",
+    "EvaluationRequest",
     "PlaybackRequest",
     "SimpleAgentRequest",
     "TrainingRequest",
+    "evaluate",
     "play",
     "random_agent",
+    "run_evaluate_cli",
     "run_play_cli",
     "run_random_agent_cli",
     "run_train_cli",

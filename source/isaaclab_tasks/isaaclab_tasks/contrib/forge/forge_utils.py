@@ -8,6 +8,29 @@ import torch
 from isaaclab.utils.math import combine_frame_transforms, quat_apply, quat_inv
 
 
+class _EpisodeForceStatistics:
+    """Track force-magnitude statistics for vectorized episodes."""
+
+    def __init__(self, num_envs: int, device: torch.device | str) -> None:
+        self.sum = torch.zeros(num_envs, device=device)
+        self.maximum = torch.zeros(num_envs, device=device)
+
+    def update(self, force_magnitude: torch.Tensor) -> None:
+        """Include one force-magnitude sample from every environment."""
+        self.sum += force_magnitude
+        torch.maximum(self.maximum, force_magnitude, out=self.maximum)
+
+    def reset(self, env_ids: torch.Tensor) -> None:
+        """Clear statistics for environments beginning a new episode."""
+        self.sum[env_ids] = 0.0
+        self.maximum[env_ids] = 0.0
+
+    def report(self, episode_lengths: torch.Tensor, env_ids: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Return batch-averaged metrics for completed episodes."""
+        force_means = self.sum[env_ids] / episode_lengths[env_ids]
+        return {"F_mean": force_means.mean(), "F_max": self.maximum[env_ids].mean()}
+
+
 def get_random_prop_gains(default_values, noise_levels, num_envs, device):
     """Helper function to randomize controller gains."""
     c_param_noise = torch.rand((num_envs, default_values.shape[1]), dtype=torch.float32, device=device)

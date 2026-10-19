@@ -204,6 +204,41 @@ Once the training is complete, you can visualize the trained agent by executing 
 The above command will load the latest checkpoint from the ``logs/sb3/Isaac-Cartpole``
 directory. You can also specify a specific checkpoint by passing the ``--checkpoint`` flag.
 
+Evaluating an RL-Games checkpoint
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Use the dedicated ``isaaclab-2.sh evaluate`` workflow to collect a fixed number of inference-only
+episodes from an RL-Games checkpoint. It uses the training environment configuration by default,
+creates no optimizer, does not train the policy, and writes a separate evaluation run under
+``logs/rl_games/<agent>/evaluations/``. When ``--track`` is enabled, TensorBoard-compatible metrics
+such as ``rewards/iter``, ``episode_lengths/iter``, and task episode metrics are synchronized to an
+independent Weights & Biases run.
+
+For the FORGE PegInsert task, the training configuration has a 10 s episode horizon. With its 15 Hz
+policy rate, an episode is 150 policy steps. Therefore, a 300-step video contains two episodes and an
+interval of 1500 steps records every ten episodes:
+
+.. code-block:: bash
+
+   set -o pipefail
+   ./isaaclab-2.sh evaluate \
+     --rl_library rl_games \
+     --task IsaacContrib-Forge-PegInsert-Direct \
+     --checkpoint /path/to/Forge.pth \
+     --num_envs 1 \
+     --num_episodes 100 \
+     --video --video_length 300 --video_interval 1500 \
+     --seed 0 \
+     --deterministic \
+     --train_env_cfg \
+     --viz kit \
+     --track \
+     --wandb-entity dylan1000-bht \
+     --wandb-project-name isaac-forge \
+     --wandb-name forge-peginsert-evaluation \
+     agent.params.config.player.deterministic=True \
+     2>&1 | tee /tmp/isaaclab-evaluate-$(date +%Y%m%d_%H%M%S).log
+
 .. _Stable-Baselines3: https://stable-baselines3.readthedocs.io/en/master/
 .. _VecEnv API: https://stable-baselines3.readthedocs.io/en/master/guide/vec_envs.html#vecenv-api-vs-gym-api
 .. _`stable_baselines3.common.vec_env.VecNormalize`: https://stable-baselines3.readthedocs.io/en/master/guide/vec_envs.html#vecnormalize

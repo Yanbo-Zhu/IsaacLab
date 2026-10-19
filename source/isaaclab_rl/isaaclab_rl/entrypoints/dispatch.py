@@ -33,6 +33,9 @@ _BACKEND_MODULES = {
         "sb3": "isaaclab_rl.entrypoints.backends.play_sb3",
         "skrl": "isaaclab_rl.entrypoints.backends.play_skrl",
     },
+    "evaluate": {
+        "rl_games": "isaaclab_rl.entrypoints.backends.evaluate_rl_games",
+    },
 }
 
 
@@ -44,6 +47,11 @@ def run_train_cli(argv: list[str] | None = None) -> int:
 def run_play_cli(argv: list[str] | None = None) -> int:
     """Dispatch unified playback command-line arguments to a backend."""
     return run_cli("play", argv)
+
+
+def run_evaluate_cli(argv: list[str] | None = None) -> int:
+    """Dispatch unified checkpoint evaluation arguments to a backend."""
+    return run_cli("evaluate", argv)
 
 
 def run_zero_agent_cli(argv: list[str] | None = None) -> int:
@@ -88,7 +96,7 @@ def run_cli(action: str, argv: list[str] | None = None) -> int:
     """Dispatch a unified RL command to its selected backend.
 
     Args:
-        action: Workflow to execute, either ``"train"`` or ``"play"``.
+        action: Workflow to execute, such as ``"train"``, ``"play"``, or ``"evaluate"``.
         argv: Command-line arguments excluding the executable name.
 
     Returns:
