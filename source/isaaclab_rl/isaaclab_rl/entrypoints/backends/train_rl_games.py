@@ -81,7 +81,6 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 def run(argv: list[str]) -> None:
     """Train an RL-Games agent."""
     from rl_games.common import env_configurations, vecenv
-    from rl_games.common.algo_observer import IsaacAlgoObserver
     from rl_games.torch_runner import Runner
 
     from isaaclab.app import launch_simulation
@@ -90,6 +89,7 @@ def run(argv: list[str]) -> None:
     from isaaclab.utils.seed import configure_seed
 
     from isaaclab_rl.rl_games import MultiObserver, PbtAlgoObserver, RlGamesGpuEnv, RlGamesVecEnvWrapper
+    from isaaclab_rl.rl_games._algo_observer import _IsaacLabAlgoObserver
 
     from isaaclab_tasks.utils import resolve_task_config
 
@@ -204,10 +204,10 @@ def run(argv: list[str]) -> None:
 
             report_activity("Building policy")
             if "pbt" in agent_cfg and agent_cfg["pbt"]["enabled"]:
-                observers = MultiObserver([IsaacAlgoObserver(), PbtAlgoObserver(agent_cfg, args_cli)])
+                observers = MultiObserver([_IsaacLabAlgoObserver(), PbtAlgoObserver(agent_cfg, args_cli)])
                 runner = Runner(observers)
             else:
-                runner = Runner(IsaacAlgoObserver())
+                runner = Runner(_IsaacLabAlgoObserver())
             report_activity(None)
 
             # configure_seed must run after Runner() so torch determinism does not disturb its initialization

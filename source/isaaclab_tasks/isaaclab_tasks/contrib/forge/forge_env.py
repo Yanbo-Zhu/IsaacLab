@@ -29,6 +29,17 @@ class ForgeEnv(FactoryEnv):
         """Initialize additional randomization and logging tensors."""
         super().__init__(cfg, render_mode, **kwargs)
 
+        self._z_axis_alignment = forge_utils._ZAxisAlignmentReward(
+            self.num_envs,
+            self.device,
+            self.cfg.seed,
+            self.cfg_task.z_axis_align_scale,
+            self.cfg_task.z_axis_align_sigma_range,
+        )
+        self._episode_z_axis_statistics = forge_utils._EpisodeZAxisAlignmentStatistics(
+            self.num_envs, self.max_episode_length, self.device
+        )
+
         # Success prediction.
         self.success_pred_scale = 0.0
         self.first_pred_success_tx = {}
@@ -243,7 +254,12 @@ class ForgeEnv(FactoryEnv):
         )
 
     def _get_rewards(self):
-        """FORGE reward includes a contact penalty and success prediction error."""
+        """Add FORGE penalties and optional directional z-axis alignment rewards."""
+        # Keep completed reports immutable for consumers buffering previous step infos.
+        if "log" in self.extras:
+            self.extras["log"] = {
+                name: value for name, value in self.extras["log"].items() if not name.startswith("ZAxisAlign/")
+            }
         # Use same base rewards as Factory.
         rew_buf = super()._get_rewards()
 
@@ -266,26 +282,38 @@ class ForgeEnv(FactoryEnv):
         if true_successes.float().mean() >= self.cfg_task.delay_until_ratio:
             self.success_pred_scale = 1.0
 
+        z_axis_align, z_axis_angle_deg, z_axis_reference = self._z_axis_alignment.compute(
+            self.held_quat, self.fixed_quat
+        )
+        self._episode_z_axis_statistics.update(z_axis_align, z_axis_angle_deg, z_axis_reference)
+
         # Add new FORGE reward terms.
         rew_dict = {
             "action_penalty_asset": pos_error + rot_error,
             "contact_penalty": contact_penalty,
             "success_pred_error": success_pred_error,
+            "z_axis_align": z_axis_align,
         }
         rew_scales = {
             "action_penalty_asset": -self.cfg_task.action_penalty_asset_scale,
             "contact_penalty": -self.cfg_task.contact_penalty_scale,
             "success_pred_error": -self.success_pred_scale,
+            "z_axis_align": self._z_axis_alignment.scale,
         }
         for rew_name, rew in rew_dict.items():
             rew_buf += rew_dict[rew_name] * rew_scales[rew_name]
 
         self._log_forge_metrics(rew_dict, policy_success_pred)
+        self.extras["logs_rew_z_axis_align_weighted"] = (z_axis_align * self._z_axis_alignment.scale).mean()
         return rew_buf
 
     def _reset_idx(self, env_ids):
         """Perform additional randomizations."""
         super()._reset_idx(env_ids)
+
+        # The completed episode was reported before reset, including its final sample.
+        self._episode_z_axis_statistics.reset(env_ids)
+        self._z_axis_alignment.reset(env_ids)
 
         # Compute initial action for correct EMA computation.
         fixed_pos_action_frame = self.fixed_pos_obs_frame + self.init_fixed_pos_obs_noise
@@ -361,8 +389,15 @@ class ForgeEnv(FactoryEnv):
         for rew_name, rew in rew_dict.items():
             self.extras[f"logs_rew_{rew_name}"] = rew.mean()
 
+        episode_log = self.extras.setdefault("log", {})
         if torch.any(self.reset_buf):
             self._log_force_episode_metrics()
+            completed_env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
+            episode_log.update(
+                self._episode_z_axis_statistics.report(
+                    completed_env_ids, self._z_axis_alignment.sigma, self._z_axis_alignment.scale
+                )
+            )
 
         for thresh, first_success_tx in self.first_pred_success_tx.items():
             curr_predicted_success = policy_success_pred > thresh

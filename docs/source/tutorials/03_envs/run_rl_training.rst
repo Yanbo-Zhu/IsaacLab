@@ -239,6 +239,100 @@ interval of 1500 steps records every ten episodes:
      agent.params.config.player.deterministic=True \
      2>&1 | tee /tmp/isaaclab-evaluate-$(date +%Y%m%d_%H%M%S).log
 
+FORGE PegInsert z-axis alignment reward
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+FORGE PegInsert adds a direction-only reward for aligning the held peg's local positive z axis with
+the socket's local positive z axis. Both axes are transformed using the true asset root world
+quaternions, in the current checkout's ``(x, y, z, w)`` convention. This follows the existing task's
+root-frame alignment convention; check the asset geometry and transforms when replacing assets.
+The reward does not measure lateral displacement or insertion depth. Spinning either asset about
+its own local z axis leaves it unchanged, whereas rotating a tilted asset about the world z axis
+can change the alignment.
+
+For the axis-direction dot product :math:`c`, clamped to :math:`[-1, 1]`, the reward is
+
+.. math::
+
+   r_z = \exp\left(-\frac{1-c}{2\sin^2(\sigma/2)}\right),
+   \qquad r = r_{\mathrm{original}} + w r_z.
+
+The decay angle :math:`\sigma` gives :math:`r_z=\exp(-1)` at that misalignment; it is not a success
+threshold. Opposite directions receive a low reward with the default decay angles. Existing
+keypoint rewards, success criteria, observations, actions, and roll/pitch action restrictions are
+preserved. The reward can encourage less tilt during contact, but does not add policy control over
+roll or pitch.
+
+The task fields are:
+
+* ``env.task.z_axis_align_scale``: finite non-negative weight :math:`w`; defaults to ``0.1`` for
+  PegInsert and ``0.0`` for the other FORGE tasks.
+* ``env.task.z_axis_align_sigma_range``: two finite bounds in degrees, defaulting to ``[2.0,10.0]``.
+  They must satisfy ``0 < lower <= upper <= 180`` and produce finite positive float32 denominators.
+  Equal bounds select a fixed angle.
+
+Each environment samples uniformly in degrees once per episode and stores the result in radians.
+Sampling uses a separate generator seeded from the resolved environment seed, so it does not
+advance the RNG used by existing domain randomization. Fixed bounds consume no random numbers.
+The sampled angle is absent from both actor and critic observations: this is unobserved reward
+randomization and may increase value-estimation uncertainty. Checkpoint input/output dimensions
+are preserved, but reward code and configuration must still be restored separately from weights.
+
+Append these Hydra overrides to an existing ``uv run isaaclab train``, ``play``, or ``evaluate``
+command for the task:
+
+.. code-block:: bash
+
+   'env.task.z_axis_align_scale=0.1' 'env.task.z_axis_align_sigma_range=[2.0,10.0]'
+
+Use ``'env.task.z_axis_align_sigma_range=[5.0,5.0]'`` for fixed 5-degree scoring. To recover the
+previous total reward, use ``'env.task.z_axis_align_scale=0.0'``; alignment diagnostics remain
+available. The original task is registered as ``IsaacContrib-Forge-PegInsert-Direct``.
+
+With tracking enabled, new training and evaluation runs save both settings under ``env_cfg.task``
+in W&B configuration. The raw and weighted instantaneous reward tags are
+``logs_rew_z_axis_align/{frame,iter,time}`` and ``logs_rew_z_axis_align_weighted/{frame,iter,time}``.
+The evaluator retains these values from the episode-completion step, rather than averaging them
+over the trajectory. Evaluation ``iter`` counts reports; TensorBoard selects the matching suffix's
+x-axis, while direct W&B evaluation logging uses frames as its step.
+
+The following metrics include every normal environment step, including the terminal step, and
+exclude simulation steps used to place assets during reset. Each metric is reduced per trajectory
+and then averaged over the completed batch. Training averages completed reports within a logging
+interval; evaluation averages them cumulatively. FORGE retains its synchronized-episode behavior.
+
+.. list-table:: Alignment episode metrics (logged without an ``Episode/`` prefix)
+   :header-rows: 1
+   :widths: 55 45
+
+   * - Metric
+     - Definition
+   * - ``ZAxisAlign/z_axis_align_reward_mean``
+     - Mean unweighted alignment reward.
+   * - ``ZAxisAlign/z_axis_align_weighted_mean``
+     - Mean contribution :math:`w r_z` to total reward.
+   * - ``ZAxisAlign/z_axis_align_weighted_return``
+     - Sum of :math:`w r_z` over the trajectory.
+   * - ``ZAxisAlign/z_axis_angle_mean_deg``
+     - Mean axis misalignment [deg].
+   * - ``ZAxisAlign/z_axis_angle_p95_deg``
+     - Mean of per-trajectory P95 angles [deg], not a pooled P95.
+   * - ``ZAxisAlign/z_axis_angle_final_deg``
+     - Last pre-reset axis misalignment [deg].
+   * - ``ZAxisAlign/z_axis_aligned_fraction_5deg``
+     - Fraction of steps with misalignment at most 5 degrees.
+   * - ``ZAxisAlign/z_axis_align_reference_5deg_mean``
+     - Mean reward recomputed with fixed 5-degree decay; diagnostic only.
+   * - ``ZAxisAlign/z_axis_align_sigma_deg``
+     - Sampled decay angle [deg].
+
+Compare the previous reward (weight zero), the default randomized reward, and a fixed-5-degree
+ablation with matching seeds and training budgets. Evaluate checkpoints under identical reward
+settings and use the angle metrics and fixed-5-degree reference score alongside insertion success,
+``Episode/F_mean``, and ``Episode/F_max``. The latter is the peak sampled smoothed force within an
+episode, not a peak over all physics substeps. Higher total return alone is insufficient evidence
+because the added term is positive; already parallel axes may make it nearly constant.
+
 .. _Stable-Baselines3: https://stable-baselines3.readthedocs.io/en/master/
 .. _VecEnv API: https://stable-baselines3.readthedocs.io/en/master/guide/vec_envs.html#vecenv-api-vs-gym-api
 .. _`stable_baselines3.common.vec_env.VecNormalize`: https://stable-baselines3.readthedocs.io/en/master/guide/vec_envs.html#vecnormalize

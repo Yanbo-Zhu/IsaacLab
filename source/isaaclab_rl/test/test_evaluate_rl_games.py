@@ -42,8 +42,11 @@ class _FakeEnv:
                     "Metrics/success_rate": torch.tensor(0.5),
                     "F_mean": torch.tensor(3.5),
                     "F_max": torch.tensor(7.0),
+                    "ZAxisAlign/z_axis_angle_mean_deg": torch.tensor(4.0),
                 },
                 "logs_rew_contact_penalty": torch.tensor(0.25),
+                "logs_rew_z_axis_align": torch.tensor(0.8),
+                "logs_rew_z_axis_align_weighted": torch.tensor(0.08),
                 "early_term_precision/0.5": 0.75,
             }
         return torch.zeros((2, 1)), torch.tensor([1.0, 2.0]), dones, infos
@@ -95,6 +98,11 @@ def test_rollout_collects_fixed_episodes_and_training_compatible_metrics() -> No
     assert summary["Episode/Metrics/success_rate"] == 0.5
     assert summary["Episode/F_mean"] == 3.5
     assert summary["Episode/F_max"] == 7.0
+    assert summary["ZAxisAlign/z_axis_angle_mean_deg"] == 4.0
+    assert "Episode/ZAxisAlign/z_axis_angle_mean_deg" not in summary
+    for suffix in ("frame", "iter", "time"):
+        assert summary[f"logs_rew_z_axis_align/{suffix}"] == torch.tensor(0.8).item()
+        assert summary[f"logs_rew_z_axis_align_weighted/{suffix}"] == torch.tensor(0.08).item()
     assert summary["logs_rew_contact_penalty/frame"] == 0.25
     assert summary["logs_rew_contact_penalty/iter"] == 0.25
     assert summary["logs_rew_contact_penalty/time"] == 0.25
@@ -165,7 +173,12 @@ def test_report_writes_tensorboard_and_wandb_history() -> None:
         torch.tensor([2.0]),
         torch.tensor([True]),
         {
-            "episode": {"Metrics/success_rate": 1.0, "F_mean": 3.5, "F_max": 7.0},
+            "episode": {
+                "Metrics/success_rate": 1.0,
+                "F_mean": 3.5,
+                "F_max": 7.0,
+                "ZAxisAlign/z_axis_angle_mean_deg": 4.0,
+            },
             "logs_rew_contact_penalty": 0.25,
             "early_term_precision/0.5": torch.tensor(0.75),
         },
@@ -197,6 +210,7 @@ def test_report_writes_tensorboard_and_wandb_history() -> None:
     assert ("Episode/Metrics/success_rate", 1.0, 1) in writer.scalars
     assert ("Episode/F_mean", 3.5, 1) in writer.scalars
     assert ("Episode/F_max", 7.0, 1) in writer.scalars
+    assert ("ZAxisAlign/z_axis_angle_mean_deg", 4.0, 1) in writer.scalars
     assert ("logs_rew_contact_penalty/frame", 0.25, 1) in writer.scalars
     assert ("logs_rew_contact_penalty/iter", 0.25, 1) in writer.scalars
     assert ("logs_rew_contact_penalty/time", 0.25, 2) in writer.scalars

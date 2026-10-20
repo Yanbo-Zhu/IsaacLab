@@ -152,7 +152,13 @@ class EpisodeAccumulator:
             "evaluation/reports": float(iteration),
             "evaluation/elapsed_time": elapsed_time,
         }
-        metrics.update({f"Episode/{name}": fmean(values) for name, values in self._episode_metrics.items() if values})
+        metrics.update(
+            {
+                name if name.startswith("ZAxisAlign/") else f"Episode/{name}": fmean(values)
+                for name, values in self._episode_metrics.items()
+                if values
+            }
+        )
         for name, value in self._direct_metrics.items():
             metrics[f"{name}/frame"] = value
             metrics[f"{name}/iter"] = value
@@ -294,7 +300,7 @@ def _start_wandb_run(
 
 def _tensorboard_step(metric_name: str, frames: int, iteration: int, elapsed_time: float) -> int:
     """Select the TensorBoard x-axis used by the matching RL-Games training metric."""
-    if metric_name.startswith("Episode/") or metric_name.endswith("/iter") or metric_name.startswith("evaluation/"):
+    if metric_name.startswith(("Episode/", "ZAxisAlign/", "evaluation/")) or metric_name.endswith("/iter"):
         return iteration
     if metric_name.endswith("/time"):
         return int(elapsed_time)
