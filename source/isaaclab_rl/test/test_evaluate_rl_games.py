@@ -7,9 +7,11 @@
 
 from __future__ import annotations
 
+import math
 import sys
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from isaaclab_rl.entrypoints.backends.evaluate_rl_games import (
@@ -253,3 +255,112 @@ def test_wandb_tracking_uses_explicit_history_reporting(monkeypatch) -> None:
             },
         }
     ]
+
+
+def _alignment_payload(ids: list[int], values: list[float]) -> dict[str, object]:
+    return {"env_ids": torch.tensor(ids), "metrics": {"z_axis_angle_mean_deg": torch.tensor(values)}}
+
+
+def test_alignment_evaluation_weights_episodes_and_excludes_exhausted_envs() -> None:
+    """Uneven completion batches and over-quota environments retain the correct episodes."""
+    accumulator = EpisodeAccumulator(num_envs=3, num_episodes=1)
+    accumulator.update(
+        torch.ones(3),
+        torch.tensor([True, True, False]),
+        {"z_axis_align": _alignment_payload([0, 1], [10.0, 20.0])},
+    )
+    accumulator.update(
+        torch.ones(3),
+        torch.tensor([True, False, True]),
+        {"z_axis_align": _alignment_payload([0, 2], [1000.0, 60.0])},
+    )
+    report = accumulator.summary(iteration=2, elapsed_time=1.0)
+    assert report["ZAxisAlign/z_axis_angle_mean_deg"] == 30.0
+    assert report["evaluation/episodes"] == 3
+    assert not any(name.startswith("Episode/ZAxisAlign/") for name in report)
+
+
+def test_alignment_observer_keeps_legacy_metrics_and_flushes_window() -> None:
+    """The real observer uses episode weighting, epoch steps, one prefix and a fresh window."""
+    from isaaclab_rl.rl_games import RlGamesAlgoObserver
+
+    scalars = []
+    flushes = []
+    writer = SimpleNamespace(add_scalar=lambda *value: scalars.append(value), flush=lambda: flushes.append(True))
+    algo = SimpleNamespace(games_to_track=10, ppo_device="cpu", device="cpu", writer=writer)
+    observer = RlGamesAlgoObserver()
+    observer.after_init(algo)
+    observer.process_infos({"z_axis_align": _alignment_payload([0, 1], [10, 20]), "episode": {"F_mean": 2.0}}, None)
+    observer.process_infos(
+        {"z_axis_align": _alignment_payload([2], [60]), "logs_rew_z_axis_align_weighted": -0.5}, None
+    )
+    observer.after_print_stats(100, 3, 2.0)
+    assert ("ZAxisAlign/z_axis_angle_mean_deg", 30.0, 3) in scalars
+    assert ("Episode/F_mean", 2.0, 3) in scalars
+    assert ("logs_rew_z_axis_align_weighted/frame", -0.5, 100) in scalars
+    assert len(flushes) == 1
+    scalars.clear()
+    observer.after_print_stats(200, 4, 3.0)
+    assert not any(name.startswith("ZAxisAlign/") for name, *_ in scalars)
+    observer.process_infos({"z_axis_align": _alignment_payload([0], [90])}, None)
+    observer.after_print_stats(300, 5, 4.0)
+    assert ("ZAxisAlign/z_axis_angle_mean_deg", 90.0, 5) in scalars
+
+
+@pytest.mark.parametrize(
+    "device",
+    ["cpu", pytest.param("cuda:0", marks=pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required"))],
+)
+def test_alignment_all_metrics_reach_writer_with_report_step(device: str) -> None:
+    """Nested metrics may remain on sim device while terminal flags live on the RL device."""
+    from isaaclab_rl.rl_games.metrics import _ZAxisAlignMetrics
+
+    from isaaclab_tasks.contrib.forge.forge_utils import _EpisodeZAxisAlignStatistics
+
+    stats = _EpisodeZAxisAlignStatistics(1, 2, device, -1)
+    alpha = torch.tensor([0.2], device=device)
+    stats.update(
+        torch.tensor([0.5], device=device),
+        torch.tensor([0.1], device=device),
+        torch.tensor([0.2], device=device),
+        alpha,
+    )
+    payload = {
+        "env_ids": torch.tensor([0], device=device),
+        "metrics": stats.report(torch.tensor([0], device=device), alpha),
+    }
+    accumulator = EpisodeAccumulator(1, 1)
+    accumulator.update(torch.ones(1), torch.ones(1, dtype=torch.bool), {"z_axis_align": payload})
+    scalars = []
+    writer = SimpleNamespace(add_scalar=lambda *value: scalars.append(value), flush=lambda: None)
+    metrics = accumulator.report(3, 2.0)
+    _write_report(writer, None, metrics, 100, 3, 2.0)
+    emitted = {name: (value, step) for name, value, step in scalars if name.startswith("ZAxisAlign/")}
+    assert len(emitted) == 13
+    assert all(step == 3 and math.isfinite(value) for value, step in emitted.values())
+    rejected = _ZAxisAlignMetrics()
+    rejected.update(payload, torch.tensor([False]))
+    assert rejected.report() == {}
+
+
+def test_alignment_observer_closes_real_async_writer_before_readback(tmp_path) -> None:
+    """A short run must persist every final metric before an immediate Kit shutdown."""
+    from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+    from tensorboardX import SummaryWriter
+
+    from isaaclab_rl.rl_games import RlGamesAlgoObserver
+
+    writer = SummaryWriter(str(tmp_path))
+    observer = RlGamesAlgoObserver()
+    observer.after_init(SimpleNamespace(games_to_track=10, ppo_device="cpu", device="cpu", writer=writer))
+    payload = {
+        "env_ids": torch.tensor([0]),
+        "metrics": {f"metric_{index}": torch.tensor([float(index)]) for index in range(13)},
+    }
+    observer.process_infos({"z_axis_align": payload}, None)
+    observer.after_print_stats(100, 2, 1.0)
+    observer.close()
+    events = EventAccumulator(str(tmp_path)).Reload()
+    assert set(events.Tags()["scalars"]) == {f"ZAxisAlign/metric_{index}" for index in range(13)}
+    for tag in events.Tags()["scalars"]:
+        assert events.Scalars(tag)[0].step == 2

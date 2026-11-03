@@ -53,6 +53,10 @@ RL-Games Wrapper
    :members:
    :show-inheritance:
 
+.. autoclass:: isaaclab_rl.rl_games.RlGamesAlgoObserver
+   :members:
+   :show-inheritance:
+
 RSL-RL Wrapper
 --------------
 

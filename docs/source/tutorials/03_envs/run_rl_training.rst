@@ -207,7 +207,7 @@ directory. You can also specify a specific checkpoint by passing the ``--checkpo
 Evaluating an RL-Games checkpoint
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Use the dedicated ``isaaclab-2.sh evaluate`` workflow to collect a fixed number of inference-only
+Use the dedicated ``isaaclab evaluate`` workflow to collect a fixed number of inference-only
 episodes from an RL-Games checkpoint. It uses the training environment configuration by default,
 creates no optimizer, does not train the policy, and writes a separate evaluation run under
 ``logs/rl_games/<agent>/evaluations/``. When ``--track`` is enabled, TensorBoard-compatible metrics
@@ -215,13 +215,14 @@ such as ``rewards/iter``, ``episode_lengths/iter``, and task episode metrics are
 independent Weights & Biases run.
 
 For the FORGE PegInsert task, the training configuration has a 10 s episode horizon. With its 15 Hz
-policy rate, an episode is 150 policy steps. Therefore, a 300-step video contains two episodes and an
-interval of 1500 steps records every ten episodes:
+policy rate, the configured maximum is 150 policy steps. Factory currently terminates when its counter
+reaches ``max_episode_length - 1``, so an ordinary episode contains 149 scored control steps.
+Video lengths and intervals are measured in control steps, independently of episode boundaries:
 
 .. code-block:: bash
 
    set -o pipefail
-   ./isaaclab-2.sh evaluate \
+   uv run isaaclab evaluate \
      --rl_library rl_games \
      --task IsaacContrib-Forge-PegInsert-Direct \
      --checkpoint /path/to/Forge.pth \
@@ -238,6 +239,110 @@ interval of 1500 steps records every ten episodes:
      --wandb-name forge-peginsert-evaluation \
      agent.params.config.player.deterministic=True \
      2>&1 | tee /tmp/isaaclab-evaluate-$(date +%Y%m%d_%H%M%S).log
+
+FORGE PegInsert local-Z tolerance penalty
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+PegInsert includes a positive misalignment penalty with a negative reward scale. The angle
+``theta`` is the directed angle between the two assets' local +Z axes in world coordinates, using
+their true root XYZW quaternions. Position does not enter this term; quaternion sign, spinning an
+asset around its own local Z, and rotating both assets together do not change it. Opposite axes
+have an angle of 180 degrees. The PegInsert root-axis convention must be rechecked for replacement
+assets; the term cannot be enabled on other FORGE tasks without independent geometric validation.
+
+For a per-episode tolerance ``alpha`` and ``x = (theta - alpha) / (pi - alpha)``, the penalty is zero
+when ``theta <= alpha`` and ``exp(kappa * (1 - x**(-2/3)))`` otherwise. Its value is in [0, 1];
+the reward contribution is ``z_axis_align_scale * penalty``. Defaults are:
+
+* ``env.task.z_axis_align_scale=-1.0`` for PegInsert, zero for other FORGE tasks. Positive scales
+  are rejected. Zero skips reward addition but retains PegInsert diagnostics.
+* ``env.task.z_axis_align_alpha_range=[10.0,20.0]`` in degrees, sampled once per episode.
+  Use ``[15.0,15.0]`` for a fixed tolerance without consuming random numbers.
+* ``env.task.z_axis_align_kappa=0.1756542881``. At alpha=15 degrees and theta=30 degrees, the
+  penalty is approximately 0.5 and its default weighted contribution is approximately -0.5.
+
+These are experimental starting values. The new penalty does not distinguish angles inside the
+tolerance; existing keypoint rewards still provide more precise pose guidance. Actor/critic inputs
+and action semantics are unchanged (24/61 observations and 7 actions); neither network observes alpha.
+The hidden tolerance randomization can therefore increase value-estimation uncertainty. The original
+roll/pitch action restriction, success criterion and termination mechanism are unchanged.
+
+Tolerance sampling uses an independent, device-local Torch generator. Its recorded seed is
+``(resolved_environment_seed + RANK) % 2**64``; the training seed may already contain its rank offset.
+If no environment seed was resolved, ``torch.initial_seed()`` supplies the base seed without a draw.
+Explicit ``env.reset(seed=...)`` restarts this stream before sampling; automatic reset does not reseed.
+Replay requires the same seed, rank, device, environment count and reset order; it does not guarantee
+bitwise deterministic physics. Invalid/zero asset quaternions raise an error rather than silently
+producing perfect alignment.
+
+The following 13 completed-episode metrics use the exact ``ZAxisAlign/`` prefix. Each is first
+calculated for one episode using its actual number of scored steps, including the terminal step.
+Training averages completed episodes within the current report window; evaluation averages retained
+completed episodes cumulatively. P95 uses linear interpolation, and both P95 and max are calculated
+per episode before averaging across episodes.
+
+.. list-table:: Metric names below ``ZAxisAlign/``
+   :header-rows: 1
+   :widths: 55 45
+
+   * - Name
+     - Per-episode value
+   * - ``z_axis_align_reward_mean``
+     - Mean positive penalty (smaller is better).
+   * - ``z_axis_align_weighted_mean``
+     - Mean weighted contribution (closer to zero is better).
+   * - ``z_axis_align_weighted_return``
+     - Sum of weighted contributions, without length normalization.
+   * - ``z_axis_angle_mean_deg``
+     - Mean angle [deg].
+   * - ``z_axis_angle_p95_deg``
+     - 95th percentile angle [deg].
+   * - ``z_axis_angle_final_deg``
+     - Final scored angle before reset [deg].
+   * - ``z_axis_aligned_fraction_5deg``
+     - Fraction of steps with angle <=5 degrees.
+   * - ``z_axis_align_reference_15deg_reward_mean``
+     - Mean positive penalty recomputed with alpha=15 degrees and the run's kappa.
+   * - ``z_axis_align_alpha_deg``
+     - Actual episode tolerance [deg].
+   * - ``z_axis_violation_fraction``
+     - Fraction of steps with angle >alpha.
+   * - ``z_axis_excess_mean_deg``
+     - Mean max(theta-alpha, 0), including nonviolating steps [deg].
+   * - ``z_axis_angle_max_deg``
+     - Maximum episode angle [deg].
+   * - ``z_axis_aligned_fraction_15deg``
+     - Fraction of steps with angle <=15 degrees.
+
+``logs_rew_z_axis_align`` and ``logs_rew_z_axis_align_weighted`` retain the existing direct-metric
+``/frame``, ``/iter`` and ``/time`` tags. They describe a single vectorized control step, not an
+episode average. The reference metric is diagnostic only, and comparisons across kappa values
+should use geometric angle metrics instead. Continue checking original success and ``Episode/F_mean``
+and ``Episode/F_max``; those force metrics describe smoothed sensor magnitudes.
+
+The wrapper passes ``extras["z_axis_align"]`` through as a separate channel containing completed
+``env_ids`` and a ``metrics`` mapping of short metric names to per-episode tensors. Training uses
+:class:`~isaaclab_rl.rl_games.RlGamesAlgoObserver` in ordinary and PBT runs. Consumers handle tensor
+device differences explicitly, and evaluation excludes completions beyond the per-environment quota.
+New TensorBoard metric steps are training epochs or evaluation report indices; evaluation's W&B
+history uses cumulative environment transitions. Existing tracking options control uploads.
+Run manifests and tracked configs also retain source revision, dirty state, checkpoint path, and
+the actual independent tolerance RNG seed.
+
+Append these quoted Hydra overrides to train, play, or evaluate commands:
+
+.. code-block:: bash
+
+   'env.task.z_axis_align_scale=-1.0' \
+   'env.task.z_axis_align_alpha_range=[10.0,20.0]' \
+   'env.task.z_axis_align_kappa=0.1756542881'
+
+For an existing Conda installation, activate the selected environment and run ``isaaclab`` directly
+instead of ``uv run isaaclab``. The reward has no ``z_axis_align_sigma_range`` setting; the training
+CLI's ``--sigma`` controls the policy distribution and is unrelated. Old policies remain structurally
+loadable when observation order, normalization and action semantics match; changing rewards does not
+guarantee arbitrary full-resume compatibility, and an old critic still predicts the old return.
+Use fresh training for the first effectiveness comparison, with fixed-alpha and zero-scale controls.
 
 .. _Stable-Baselines3: https://stable-baselines3.readthedocs.io/en/master/
 .. _VecEnv API: https://stable-baselines3.readthedocs.io/en/master/guide/vec_envs.html#vecenv-api-vs-gym-api

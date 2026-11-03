@@ -37,6 +37,7 @@ from isaaclab_rl.entrypoints.common import (
     startup_screen,
     write_run_manifest,
 )
+from isaaclab_rl.rl_games.metrics import _rl_games_run_metadata, _ZAxisAlignMetrics
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import setup_preset_cli
@@ -71,6 +72,7 @@ class EpisodeAccumulator:
         self._episode_lengths: list[float] = []
         self._episode_metrics: dict[str, list[float]] = defaultdict(list)
         self._direct_metrics: dict[str, float] = {}
+        self._z_axis_align_metrics = _ZAxisAlignMetrics()
         self._frames = 0
 
     @property
@@ -120,6 +122,7 @@ class EpisodeAccumulator:
                 self._episode_lengths.append(float(self._lengths[env_id].item()))
                 self._completed[env_id] += 1
             self._record_metrics(infos)
+            self._z_axis_align_metrics.update(infos.get("z_axis_align"), retained_dones)
 
         if torch.any(dones):
             self._returns[dones] = 0.0
@@ -153,6 +156,7 @@ class EpisodeAccumulator:
             "evaluation/elapsed_time": elapsed_time,
         }
         metrics.update({f"Episode/{name}": fmean(values) for name, values in self._episode_metrics.items() if values})
+        metrics.update(self._z_axis_align_metrics.report())
         for name, value in self._direct_metrics.items():
             metrics[f"{name}/frame"] = value
             metrics[f"{name}/iter"] = value
@@ -255,6 +259,7 @@ def _start_wandb_run(
     env_cfg: Any,
     agent_cfg: dict[str, Any],
     checkpoint: str,
+    metadata: dict[str, str] | None = None,
 ) -> Any | None:
     """Create the independent WandB evaluation run when tracking is enabled."""
     if not args_cli.track:
@@ -289,12 +294,14 @@ def _start_wandb_run(
                 },
             }
         )
+        if metadata is not None:
+            run.config.update({"run_metadata": metadata})
     return run
 
 
 def _tensorboard_step(metric_name: str, frames: int, iteration: int, elapsed_time: float) -> int:
     """Select the TensorBoard x-axis used by the matching RL-Games training metric."""
-    if metric_name.startswith("Episode/") or metric_name.endswith("/iter") or metric_name.startswith("evaluation/"):
+    if metric_name.startswith(("Episode/", "ZAxisAlign/", "evaluation/")) or metric_name.endswith("/iter"):
         return iteration
     if metric_name.endswith("/time"):
         return int(elapsed_time)
@@ -407,13 +414,6 @@ def run(argv: list[str]) -> None:
             config_name = agent_cfg["params"]["config"]["name"]
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             log_dir = os.path.abspath(os.path.join("logs", "rl_games", config_name, "evaluations", timestamp))
-            write_run_manifest(
-                log_dir,
-                library="rl_games",
-                task=args_cli.task,
-                metadata={"agent": args_cli.agent, "checkpoint": checkpoint, "run_type": "evaluation"},
-            )
-            dump_train_configs(log_dir, env_cfg, agent_cfg)
             env_cfg.log_dir = log_dir
             apply_video_recording(env_cfg, log_dir, args_cli, subdir="evaluation")
 
@@ -431,6 +431,14 @@ def run(argv: list[str]) -> None:
                 convert_marl_to_single_agent=isinstance(env_cfg, DirectMARLEnvCfg),
             )
             env = RlGamesVecEnvWrapper(env, rl_device, clip_obs, clip_actions, obs_groups, concate_obs_groups)
+            run_metadata = _rl_games_run_metadata(env, checkpoint)
+            dump_train_configs(log_dir, env_cfg, agent_cfg)
+            write_run_manifest(
+                log_dir,
+                library="rl_games",
+                task=args_cli.task,
+                metadata={"agent": args_cli.agent, "run_type": "evaluation", **run_metadata},
+            )
             vecenv.register(
                 "IsaacRlgWrapper",
                 lambda config_name, num_actors, **kwargs: RlGamesGpuEnv(config_name, num_actors, **kwargs),
@@ -450,7 +458,7 @@ def run(argv: list[str]) -> None:
             writer = SummaryWriter(log_dir)
             wandb_run = None
             try:
-                wandb_run = _start_wandb_run(args_cli, log_dir, env_cfg, agent_cfg, checkpoint)
+                wandb_run = _start_wandb_run(args_cli, log_dir, env_cfg, agent_cfg, checkpoint, metadata=run_metadata)
                 screen.close()
                 rollout_start_time = time.perf_counter()
                 report_iteration = 0

@@ -16,11 +16,18 @@ class ForgeTask(FactoryTask):
     contact_penalty_scale: float = 0.05
     delay_until_ratio: float = 0.25
     contact_penalty_threshold_range = [5.0, 10.0]
+    z_axis_align_scale: float = 0.0
+    """Nonpositive scale multiplying the positive local-Z misalignment penalty."""
+    z_axis_align_alpha_range: list[float] = [10.0, 20.0]
+    """Per-episode angular tolerance sampling range [deg]."""
+    z_axis_align_kappa: float = 0.1756542881
+    """Positive shape parameter of the tolerance-based misalignment penalty."""
 
 
 @configclass
 class ForgePegInsert(PegInsert, ForgeTask):
     contact_penalty_scale: float = 0.2
+    z_axis_align_scale: float = -1.0
 
 
 @configclass

@@ -8,9 +8,11 @@ __all__ = [
     "PbtAlgoObserver",
     "PbtCfg",
     "RlGamesGpuEnv",
+    "RlGamesAlgoObserver",
     "RlGamesVecEnvWrapper",
     "make_concat_plan",
 ]
 
+from .observer import RlGamesAlgoObserver
 from .pbt import MultiObserver, PbtAlgoObserver, PbtCfg
 from .rl_games import RlGamesGpuEnv, RlGamesVecEnvWrapper, make_concat_plan

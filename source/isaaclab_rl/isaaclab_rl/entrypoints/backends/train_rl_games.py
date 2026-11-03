@@ -81,7 +81,6 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 def run(argv: list[str]) -> None:
     """Train an RL-Games agent."""
     from rl_games.common import env_configurations, vecenv
-    from rl_games.common.algo_observer import IsaacAlgoObserver
     from rl_games.torch_runner import Runner
 
     from isaaclab.app import launch_simulation
@@ -89,7 +88,14 @@ def run(argv: list[str]) -> None:
     from isaaclab.utils.assets import retrieve_file_path
     from isaaclab.utils.seed import configure_seed
 
-    from isaaclab_rl.rl_games import MultiObserver, PbtAlgoObserver, RlGamesGpuEnv, RlGamesVecEnvWrapper
+    from isaaclab_rl.rl_games import (
+        MultiObserver,
+        PbtAlgoObserver,
+        RlGamesAlgoObserver,
+        RlGamesGpuEnv,
+        RlGamesVecEnvWrapper,
+    )
+    from isaaclab_rl.rl_games.metrics import _rl_games_run_metadata
 
     from isaaclab_tasks.utils import resolve_task_config
 
@@ -158,13 +164,6 @@ def run(argv: list[str]) -> None:
             experiment_name = log_dir if args_cli.wandb_name is None else args_cli.wandb_name
 
             run_log_dir = os.path.join(log_root_path, log_dir)
-            write_run_manifest(
-                run_log_dir,
-                library="rl_games",
-                task=args_cli.task,
-                metadata={"agent": args_cli.agent},
-            )
-            dump_train_configs(run_log_dir, env_cfg, agent_cfg)
             print(f"Exact experiment name requested from command line: {run_log_dir}")
 
             rl_device = agent_cfg["params"]["config"]["device"]
@@ -190,6 +189,14 @@ def run(argv: list[str]) -> None:
             start_time = time.time()
             report_activity("Wrapping environment")
             env = RlGamesVecEnvWrapper(env, rl_device, clip_obs, clip_actions, obs_groups, concate_obs_groups)
+            run_metadata = _rl_games_run_metadata(env, agent_cfg["params"].get("load_path"))
+            dump_train_configs(run_log_dir, env_cfg, agent_cfg)
+            write_run_manifest(
+                run_log_dir,
+                library="rl_games",
+                task=args_cli.task,
+                metadata={"agent": args_cli.agent, **run_metadata},
+            )
             report_activity(None)
 
             vecenv.register(
@@ -203,11 +210,12 @@ def run(argv: list[str]) -> None:
             agent_cfg["params"]["config"]["num_actors"] = env.unwrapped.num_envs
 
             report_activity("Building policy")
+            algo_observer = RlGamesAlgoObserver()
             if "pbt" in agent_cfg and agent_cfg["pbt"]["enabled"]:
-                observers = MultiObserver([IsaacAlgoObserver(), PbtAlgoObserver(agent_cfg, args_cli)])
+                observers = MultiObserver([algo_observer, PbtAlgoObserver(agent_cfg, args_cli)])
                 runner = Runner(observers)
             else:
-                runner = Runner(IsaacAlgoObserver())
+                runner = Runner(algo_observer)
             report_activity(None)
 
             # configure_seed must run after Runner() so torch determinism does not disturb its initialization
@@ -234,6 +242,7 @@ def run(argv: list[str]) -> None:
                 if not wandb.run.resumed:
                     wandb.config.update({"env_cfg": env_cfg.to_dict()})
                     wandb.config.update({"agent_cfg": agent_cfg})
+                    wandb.config.update({"run_metadata": run_metadata})
 
             screen.close()
             try:
@@ -242,6 +251,8 @@ def run(argv: list[str]) -> None:
                 else:
                     runner.run({"train": True, "play": False, "sigma": train_sigma})
                 print(f"Training time: {round(time.time() - start_time, 2)} seconds")
-                env.close()
             except KeyboardInterrupt:
                 pass
+            finally:
+                algo_observer.close()
+                env.close()

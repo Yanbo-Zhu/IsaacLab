@@ -2,10 +2,15 @@
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
+import math
+import os
+from typing import Any
+
 import numpy as np
 import torch
 import warp as wp
 
+from isaaclab.envs import VecEnvObs
 from isaaclab.utils.math import (
     axis_angle_from_quat,
     euler_xyz_from_quat,
@@ -27,7 +32,22 @@ class ForgeEnv(FactoryEnv):
 
     def __init__(self, cfg: ForgeEnvCfg, render_mode: str | None = None, **kwargs):
         """Initialize additional randomization and logging tensors."""
+        forge_utils._validate_z_axis_align_config(
+            cfg.task.name, cfg.task.z_axis_align_scale, cfg.task.z_axis_align_alpha_range, cfg.task.z_axis_align_kappa
+        )
         super().__init__(cfg, render_mode, **kwargs)
+
+        self._z_axis_align_randomization: forge_utils._ZAxisAlignRandomization | None = None
+        if self.cfg_task.name == "peg_insert":
+            seed = self.cfg.seed if self.cfg.seed is not None else torch.initial_seed()
+            self._z_axis_align_randomization = forge_utils._ZAxisAlignRandomization(
+                self.num_envs, self.device, self.cfg_task.z_axis_align_alpha_range, seed, int(os.getenv("RANK", "0"))
+            )
+            self._z_axis_align_statistics = forge_utils._EpisodeZAxisAlignStatistics(
+                self.num_envs, self.max_episode_length, self.device, self.cfg_task.z_axis_align_scale
+            )
+            self._z_axis_align_reference_alpha = torch.tensor(math.radians(15.0), device=self.device)
+            print(f"[INFO] Z-axis alignment independent RNG seed: {self.z_axis_align_seed}")
 
         # Success prediction.
         self.success_pred_scale = 0.0
@@ -62,6 +82,23 @@ class ForgeEnv(FactoryEnv):
 
         self.pos_threshold = self.default_pos_threshold.clone()
         self.rot_threshold = self.default_rot_threshold.clone()
+
+    @property
+    def z_axis_align_seed(self) -> int | None:
+        """Actual rank-specific seed of the independent tolerance stream, if applicable."""
+        if self._z_axis_align_randomization is None:
+            return None
+        return self._z_axis_align_randomization.seed
+
+    def reset(self, seed: int | None = None, options: dict[str, Any] | None = None) -> tuple[VecEnvObs, dict]:
+        """Reset episodes and replay the independent tolerance stream when explicitly seeded."""
+        self.extras.pop("z_axis_align", None)
+        if seed is not None and self._z_axis_align_randomization is not None:
+            resolved_seed = self.seed(seed)
+            self._z_axis_align_randomization.reseed(resolved_seed)
+            # The global seed was already resolved, including the seed=-1 case.
+            seed = None
+        return super().reset(seed=seed, options=options)
 
     def _compute_intermediate_values(self, dt):
         """Add noise to observations for force sensing."""
@@ -244,6 +281,7 @@ class ForgeEnv(FactoryEnv):
 
     def _get_rewards(self):
         """FORGE reward includes a contact penalty and success prediction error."""
+        self.extras.pop("z_axis_align", None)
         # Use same base rewards as Factory.
         rew_buf = super()._get_rewards()
 
@@ -277,7 +315,26 @@ class ForgeEnv(FactoryEnv):
             "contact_penalty": -self.cfg_task.contact_penalty_scale,
             "success_pred_error": -self.success_pred_scale,
         }
+        if self._z_axis_align_randomization is not None:
+            theta = forge_utils._z_axis_angle(self.held_quat, self.fixed_quat)
+            alpha = self._z_axis_align_randomization.alpha
+            penalty = forge_utils._z_axis_penalty(theta, alpha, self.cfg_task.z_axis_align_kappa)
+            reference = forge_utils._z_axis_penalty(
+                theta, self._z_axis_align_reference_alpha, self.cfg_task.z_axis_align_kappa
+            )
+            rew_dict["z_axis_align"] = penalty
+            rew_scales["z_axis_align"] = self.cfg_task.z_axis_align_scale
+            self.extras["logs_rew_z_axis_align_weighted"] = (penalty * self.cfg_task.z_axis_align_scale).mean()
+            self._z_axis_align_statistics.update(theta, penalty, reference, alpha)
+            completed_env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
+            if len(completed_env_ids) > 0:
+                self.extras["z_axis_align"] = {
+                    "env_ids": completed_env_ids.clone(),
+                    "metrics": self._z_axis_align_statistics.report(completed_env_ids, alpha),
+                }
         for rew_name, rew in rew_dict.items():
+            if rew_name == "z_axis_align" and rew_scales[rew_name] == 0.0:
+                continue
             rew_buf += rew_dict[rew_name] * rew_scales[rew_name]
 
         self._log_forge_metrics(rew_dict, policy_success_pred)
@@ -286,6 +343,9 @@ class ForgeEnv(FactoryEnv):
     def _reset_idx(self, env_ids):
         """Perform additional randomizations."""
         super()._reset_idx(env_ids)
+        if self._z_axis_align_randomization is not None:
+            self._z_axis_align_statistics.reset(env_ids)
+            self._z_axis_align_randomization.reset(env_ids)
 
         # Compute initial action for correct EMA computation.
         fixed_pos_action_frame = self.fixed_pos_obs_frame + self.init_fixed_pos_obs_noise
