@@ -106,6 +106,59 @@ def test_rollout_collects_fixed_episodes_and_training_compatible_metrics() -> No
     assert torch.count_nonzero(player.states[0]) == 0
 
 
+def test_alignment_metrics_are_episode_weighted_and_exclude_over_quota_rows() -> None:
+    """Different completion batch sizes and surplus episodes cannot bias the new metrics."""
+    accumulator = EpisodeAccumulator(num_envs=3, num_episodes=1)
+    name = "ZAxisAlign/z_axis_align_penalty_mean"
+    accumulator.update(
+        torch.zeros(3),
+        torch.tensor([True, False, False]),
+        {"z_axis_align": {"env_ids": torch.tensor([0]), "metrics": {name: torch.tensor([0.1])}}},
+    )
+    accumulator.update(
+        torch.zeros(3),
+        torch.tensor([True, True, True]),
+        {"z_axis_align": {"env_ids": torch.tensor([0, 1, 2]), "metrics": {name: torch.tensor([0.99, 0.2, 0.6])}}},
+    )
+    report = accumulator.summary(iteration=2, elapsed_time=1.0)
+    assert abs(report[name] - 0.3) < 1e-7
+    assert report["evaluation/episodes"] == 3.0
+    assert not any(key.startswith("Episode/ZAxisAlign/") for key in report)
+
+
+def test_alignment_observer_reports_windows_and_drains_pending_events() -> None:
+    """The logging observer leaves infos intact and closes its shared writer exactly once."""
+    from isaaclab_rl.rl_games._z_axis_alignment import _ZAxisAlignmentObserver
+
+    class Writer:
+        def __init__(self):
+            self.scalars = []
+            self.close_calls = 0
+
+        def add_scalar(self, name, value, step):
+            self.scalars.append((name, value, step))
+
+        def close(self):
+            self.close_calls += 1
+
+    writer = Writer()
+    observer = _ZAxisAlignmentObserver()
+    observer.after_init(SimpleNamespace(writer=writer, frame=12))
+    name = "ZAxisAlign/z_axis_align_penalty_mean"
+    samples = torch.tensor([0.25, 0.75])
+    infos = {"z_axis_align": {"env_ids": torch.tensor([0, 1]), "metrics": {name: samples}}}
+    observer.process_infos(infos, torch.tensor([[0], [1]]))
+    observer.after_clear_stats()
+    observer.after_print_stats(8, 1, 1.0)
+    assert writer.scalars == [(name, 0.5, 8)]
+    observer.process_infos(infos, torch.tensor([0]))
+    observer.close()
+    observer.close()
+    assert writer.scalars[-1] == (name, 0.25, 12)
+    assert writer.close_calls == 1
+    assert torch.equal(samples, torch.tensor([0.25, 0.75]))
+
+
 def test_accumulator_rejects_summary_before_all_envs_complete() -> None:
     """Partial vectorized evaluation must not be reported as a final result."""
     accumulator = EpisodeAccumulator(num_envs=2, num_episodes=1)

@@ -37,6 +37,7 @@ from isaaclab_rl.entrypoints.common import (
     startup_screen,
     write_run_manifest,
 )
+from isaaclab_rl.rl_games._z_axis_alignment import _Z_AXIS_ALIGNMENT_DESIGN, _ZAxisAlignmentMetrics
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import setup_preset_cli
@@ -72,6 +73,7 @@ class EpisodeAccumulator:
         self._episode_metrics: dict[str, list[float]] = defaultdict(list)
         self._direct_metrics: dict[str, float] = {}
         self._frames = 0
+        self._z_axis_alignment_metrics = _ZAxisAlignmentMetrics()
 
     @property
     def is_complete(self) -> bool:
@@ -114,6 +116,8 @@ class EpisodeAccumulator:
 
         completed = self._completed.to(device=dones.device)
         retained_dones = torch.logical_and(dones, completed < self._num_episodes)
+        if "z_axis_align" in infos:
+            self._z_axis_alignment_metrics.update(infos, torch.nonzero(retained_dones, as_tuple=False).flatten())
         if torch.any(retained_dones):
             for env_id in torch.nonzero(retained_dones, as_tuple=False).flatten().tolist():
                 self._episode_returns.append(float(self._returns[env_id].item()))
@@ -153,6 +157,7 @@ class EpisodeAccumulator:
             "evaluation/elapsed_time": elapsed_time,
         }
         metrics.update({f"Episode/{name}": fmean(values) for name, values in self._episode_metrics.items() if values})
+        metrics.update(self._z_axis_alignment_metrics.report())
         for name, value in self._direct_metrics.items():
             metrics[f"{name}/frame"] = value
             metrics[f"{name}/iter"] = value
@@ -289,6 +294,8 @@ def _start_wandb_run(
                 },
             }
         )
+        if hasattr(getattr(env_cfg, "task", None), "z_axis_align_alpha_deg") and env_cfg.task.name == "peg_insert":
+            run.config.update({"z_axis_align_design": _Z_AXIS_ALIGNMENT_DESIGN})
     return run
 
 

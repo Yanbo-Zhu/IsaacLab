@@ -16,11 +16,16 @@ class ForgeTask(FactoryTask):
     contact_penalty_scale: float = 0.05
     delay_until_ratio: float = 0.25
     contact_penalty_threshold_range = [5.0, 10.0]
+    z_axis_align_alpha_deg: float = 5.0
+    """Fixed local-Z alignment tolerance [deg]."""
+    z_axis_align_scale: float = 0.0
+    """Signed cube-root penalty weight in [-1, 0]; zero disables the contribution."""
 
 
 @configclass
 class ForgePegInsert(PegInsert, ForgeTask):
     contact_penalty_scale: float = 0.2
+    z_axis_align_scale: float = -1.0
 
 
 @configclass

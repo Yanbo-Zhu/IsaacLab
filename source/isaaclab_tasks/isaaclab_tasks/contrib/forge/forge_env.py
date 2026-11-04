@@ -27,6 +27,9 @@ class ForgeEnv(FactoryEnv):
 
     def __init__(self, cfg: ForgeEnvCfg, render_mode: str | None = None, **kwargs):
         """Initialize additional randomization and logging tensors."""
+        forge_utils._validate_z_axis_alignment_config(
+            cfg.task.name, cfg.task.z_axis_align_alpha_deg, cfg.task.z_axis_align_scale
+        )
         super().__init__(cfg, render_mode, **kwargs)
 
         # Success prediction.
@@ -45,6 +48,15 @@ class ForgeEnv(FactoryEnv):
         self.force_sensor_smooth = torch.zeros((self.num_envs, 6), device=self.device)
         self.force_sensor_world_smooth = torch.zeros((self.num_envs, 6), device=self.device)
         self._episode_force_statistics = forge_utils._EpisodeForceStatistics(self.num_envs, self.device)
+        self._z_axis_alignment_statistics: forge_utils._EpisodeZAxisAlignmentStatistics | None = None
+        if self.cfg_task.name == "peg_insert":
+            self._z_axis_alignment_statistics = forge_utils._EpisodeZAxisAlignmentStatistics(
+                self.num_envs,
+                self.max_episode_length,
+                self.cfg_task.z_axis_align_alpha_deg,
+                self.cfg_task.z_axis_align_scale,
+                self.device,
+            )
 
         # Set nominal dynamics parameters for randomization.
         self.default_gains = torch.tensor(self.cfg.ctrl.default_task_prop_gains, device=self.device).repeat(
@@ -244,6 +256,7 @@ class ForgeEnv(FactoryEnv):
 
     def _get_rewards(self):
         """FORGE reward includes a contact penalty and success prediction error."""
+        self.extras.pop("z_axis_align", None)
         # Use same base rewards as Factory.
         rew_buf = super()._get_rewards()
 
@@ -277,7 +290,23 @@ class ForgeEnv(FactoryEnv):
             "contact_penalty": -self.cfg_task.contact_penalty_scale,
             "success_pred_error": -self.success_pred_scale,
         }
+        if self._z_axis_alignment_statistics is not None:
+            theta, penalty = forge_utils._compute_z_axis_alignment(
+                self.held_quat, self.fixed_quat, np.deg2rad(self.cfg_task.z_axis_align_alpha_deg)
+            )
+            rew_dict["z_axis_align"] = penalty
+            rew_scales["z_axis_align"] = self.cfg_task.z_axis_align_scale
+            self.extras["logs_rew_z_axis_align_weighted"] = penalty.mean() * self.cfg_task.z_axis_align_scale
+            self._z_axis_alignment_statistics.update(theta, penalty)
+            completed_env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
+            if completed_env_ids.numel():
+                self.extras["z_axis_align"] = {
+                    "env_ids": completed_env_ids.clone(),
+                    "metrics": self._z_axis_alignment_statistics.report(completed_env_ids),
+                }
         for rew_name, rew in rew_dict.items():
+            if rew_name == "z_axis_align" and rew_scales[rew_name] == 0.0:
+                continue
             rew_buf += rew_dict[rew_name] * rew_scales[rew_name]
 
         self._log_forge_metrics(rew_dict, policy_success_pred)
@@ -347,6 +376,9 @@ class ForgeEnv(FactoryEnv):
         self.flip_quats = torch.ones((self.num_envs,), dtype=torch.float32, device=self.device)
         rand_flips = torch.rand(self.num_envs) > 0.5
         self.flip_quats[rand_flips] = -1.0
+
+        if self._z_axis_alignment_statistics is not None:
+            self._z_axis_alignment_statistics.reset(env_ids)
 
     def _reset_buffers(self, env_ids):
         """Reset additional logging metrics."""

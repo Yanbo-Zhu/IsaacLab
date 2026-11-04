@@ -12,3 +12,4 @@ learning frameworks.
   rl_existing_scripts
   rl_frameworks
   training_guide
+  forge_z_axis_alignment

@@ -90,6 +90,7 @@ def run(argv: list[str]) -> None:
     from isaaclab.utils.seed import configure_seed
 
     from isaaclab_rl.rl_games import MultiObserver, PbtAlgoObserver, RlGamesGpuEnv, RlGamesVecEnvWrapper
+    from isaaclab_rl.rl_games._z_axis_alignment import _Z_AXIS_ALIGNMENT_DESIGN, _ZAxisAlignmentObserver
 
     from isaaclab_tasks.utils import resolve_task_config
 
@@ -203,11 +204,14 @@ def run(argv: list[str]) -> None:
             agent_cfg["params"]["config"]["num_actors"] = env.unwrapped.num_envs
 
             report_activity("Building policy")
+            observers = [IsaacAlgoObserver()]
             if "pbt" in agent_cfg and agent_cfg["pbt"]["enabled"]:
-                observers = MultiObserver([IsaacAlgoObserver(), PbtAlgoObserver(agent_cfg, args_cli)])
-                runner = Runner(observers)
-            else:
-                runner = Runner(IsaacAlgoObserver())
+                observers.append(PbtAlgoObserver(agent_cfg, args_cli))
+            z_axis_observer = None
+            if getattr(env.unwrapped, "_z_axis_alignment_statistics", None) is not None:
+                z_axis_observer = _ZAxisAlignmentObserver()
+                observers.append(z_axis_observer)
+            runner = Runner(MultiObserver(observers) if len(observers) > 1 else observers[0])
             report_activity(None)
 
             # configure_seed must run after Runner() so torch determinism does not disturb its initialization
@@ -218,30 +222,38 @@ def run(argv: list[str]) -> None:
             runner.reset()
 
             global_rank = int(os.getenv("RANK", "0"))
-            if args_cli.track and global_rank == 0:
-                if args_cli.wandb_entity is None:
-                    raise ValueError("Weights and Biases entity must be specified for tracking.")
-                import wandb
-
-                wandb.init(
-                    project=wandb_project,
-                    entity=args_cli.wandb_entity,
-                    name=experiment_name,
-                    sync_tensorboard=True,
-                    monitor_gym=True,
-                    save_code=True,
-                )
-                if not wandb.run.resumed:
-                    wandb.config.update({"env_cfg": env_cfg.to_dict()})
-                    wandb.config.update({"agent_cfg": agent_cfg})
-
-            screen.close()
+            wandb_run = None
             try:
+                if args_cli.track and global_rank == 0:
+                    if args_cli.wandb_entity is None:
+                        raise ValueError("Weights and Biases entity must be specified for tracking.")
+                    import wandb
+
+                    wandb_run = wandb.init(
+                        project=wandb_project,
+                        entity=args_cli.wandb_entity,
+                        name=experiment_name,
+                        sync_tensorboard=True,
+                        monitor_gym=True,
+                        save_code=True,
+                    )
+                    if not wandb_run.resumed:
+                        wandb_run.config.update({"env_cfg": env_cfg.to_dict()})
+                        wandb_run.config.update({"agent_cfg": agent_cfg})
+                        if z_axis_observer is not None:
+                            wandb_run.config.update({"z_axis_align_design": _Z_AXIS_ALIGNMENT_DESIGN})
+
+                screen.close()
                 if args_cli.checkpoint is not None:
                     runner.run({"train": True, "play": False, "sigma": train_sigma, "checkpoint": resume_path})
                 else:
                     runner.run({"train": True, "play": False, "sigma": train_sigma})
                 print(f"Training time: {round(time.time() - start_time, 2)} seconds")
-                env.close()
             except KeyboardInterrupt:
                 pass
+            finally:
+                if z_axis_observer is not None:
+                    z_axis_observer.close()
+                env.close()
+                if wandb_run is not None:
+                    wandb_run.finish()
