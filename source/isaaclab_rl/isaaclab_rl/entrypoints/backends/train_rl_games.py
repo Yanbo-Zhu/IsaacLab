@@ -203,11 +203,12 @@ def run(argv: list[str]) -> None:
             agent_cfg["params"]["config"]["num_actors"] = env.unwrapped.num_envs
 
             report_activity("Building policy")
+            isaac_observer = IsaacAlgoObserver()
             if "pbt" in agent_cfg and agent_cfg["pbt"]["enabled"]:
-                observers = MultiObserver([IsaacAlgoObserver(), PbtAlgoObserver(agent_cfg, args_cli)])
+                observers = MultiObserver([isaac_observer, PbtAlgoObserver(agent_cfg, args_cli)])
                 runner = Runner(observers)
             else:
-                runner = Runner(IsaacAlgoObserver())
+                runner = Runner(isaac_observer)
             report_activity(None)
 
             # configure_seed must run after Runner() so torch determinism does not disturb its initialization
@@ -218,12 +219,13 @@ def run(argv: list[str]) -> None:
             runner.reset()
 
             global_rank = int(os.getenv("RANK", "0"))
+            tracking_context = contextlib.nullcontext()
             if args_cli.track and global_rank == 0:
                 if args_cli.wandb_entity is None:
                     raise ValueError("Weights and Biases entity must be specified for tracking.")
                 import wandb
 
-                wandb.init(
+                tracking_context = wandb.init(
                     project=wandb_project,
                     entity=args_cli.wandb_entity,
                     name=experiment_name,
@@ -235,13 +237,20 @@ def run(argv: list[str]) -> None:
                     wandb.config.update({"env_cfg": env_cfg.to_dict()})
                     wandb.config.update({"agent_cfg": agent_cfg})
 
-            screen.close()
-            try:
-                if args_cli.checkpoint is not None:
-                    runner.run({"train": True, "play": False, "sigma": train_sigma, "checkpoint": resume_path})
-                else:
-                    runner.run({"train": True, "play": False, "sigma": train_sigma})
-                print(f"Training time: {round(time.time() - start_time, 2)} seconds")
-                env.close()
-            except KeyboardInterrupt:
-                pass
+            # Finish tracking before Kit can terminate the process during shutdown.
+            with tracking_context:
+                screen.close()
+                try:
+                    if args_cli.checkpoint is not None:
+                        runner.run({"train": True, "play": False, "sigma": train_sigma, "checkpoint": resume_path})
+                    else:
+                        runner.run({"train": True, "play": False, "sigma": train_sigma})
+                    print(f"Training time: {round(time.time() - start_time, 2)} seconds")
+                    env.close()
+                except KeyboardInterrupt:
+                    pass
+                finally:
+                    if args_cli.track and global_rank == 0:
+                        writer = getattr(isaac_observer, "writer", None)
+                        if writer is not None:
+                            writer.close()

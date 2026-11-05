@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import runpy
 import sys
@@ -16,6 +17,127 @@ import gymnasium as gym
 import pytest
 
 from isaaclab_rl.entrypoints import PlaybackRequest, TrainingRequest, api, dispatch
+
+
+@pytest.mark.parametrize("track,rank,fail", [(True, 0, False), (True, 0, True), (False, 0, False), (True, 1, False)])
+def test_rl_games_finishes_tracking_before_simulation_shutdown(monkeypatch, track, rank, fail) -> None:
+    """Tracked runs flush before Kit shutdown, including when training raises."""
+    import rl_games.torch_runner as runner_module
+    from rl_games.common import env_configurations, vecenv
+
+    import isaaclab.app as app
+
+    from isaaclab_rl.entrypoints.backends import train_rl_games as backend
+
+    import isaaclab_tasks.utils as task_utils
+
+    events = []
+    args = types.SimpleNamespace(
+        task="Isaac-Test",
+        agent="rl_games_cfg_entry_point",
+        seed=0,
+        max_iterations=1,
+        checkpoint=None,
+        sigma=None,
+        distributed=False,
+        deterministic=False,
+        track=track,
+        wandb_entity="test",
+        wandb_project_name="test",
+        wandb_name="test",
+    )
+    env_cfg = types.SimpleNamespace(seed=0, sim=types.SimpleNamespace(device="cpu"), to_dict=lambda: {})
+    agent_cfg = {"params": {"seed": 0, "env": {}, "config": {"name": "test", "device": "cpu", "max_epochs": 1}}}
+    env = types.SimpleNamespace(unwrapped=types.SimpleNamespace(num_envs=1), close=lambda: events.append("env_close"))
+    screen = types.SimpleNamespace(stage=lambda *a: None, close=lambda: None)
+
+    @contextlib.contextmanager
+    def simulation(*args, **kwargs):
+        try:
+            yield
+        finally:
+            events.append("simulation_close")
+
+    class TrackingRun:
+        resumed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            events.append(("wandb_finish", exc_type))
+
+    run = TrackingRun()
+
+    def init_tracking(**kwargs):
+        events.append("wandb_init")
+        return run
+
+    def train(_args):
+        events.append("train")
+        if fail:
+            raise RuntimeError("training failed")
+
+    runner = types.SimpleNamespace(load=lambda cfg: None, reset=lambda: None, run=train)
+
+    def make_runner(observer):
+        observer.writer = types.SimpleNamespace(close=lambda: events.append("tensorboard_close"))
+        return runner
+
+    monkeypatch.setenv("RANK", str(rank))
+    monkeypatch.setattr(backend, "_parse_args", lambda argv: args)
+    monkeypatch.setattr(backend, "startup_screen", lambda *a, **kw: contextlib.nullcontext(screen))
+    monkeypatch.setattr(app, "launch_simulation", simulation)
+    monkeypatch.setattr(task_utils, "resolve_task_config", lambda *a: (env_cfg, agent_cfg))
+    monkeypatch.setattr(runner_module, "Runner", make_runner)
+    monkeypatch.setattr(vecenv, "register", lambda *a: None)
+    monkeypatch.setattr(env_configurations, "register", lambda *a: None)
+    monkeypatch.setitem(
+        sys.modules,
+        "isaaclab_rl.rl_games",
+        types.SimpleNamespace(
+            MultiObserver=None,
+            PbtAlgoObserver=None,
+            RlGamesGpuEnv=None,
+            RlGamesVecEnvWrapper=lambda env, *a: env,
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "wandb",
+        types.SimpleNamespace(
+            init=init_tracking,
+            run=run,
+            config=types.SimpleNamespace(update=lambda *a: None),
+        ),
+    )
+    for name in (
+        "pre_launch_video_config",
+        "show_run_summary",
+        "apply_env_overrides",
+        "validate_distributed_device",
+        "write_run_manifest",
+        "dump_train_configs",
+        "configure_io_descriptors",
+        "apply_video_recording",
+        "report_activity",
+    ):
+        monkeypatch.setattr(backend, name, lambda *a, **kw: None)
+    monkeypatch.setattr(backend, "create_isaaclab_env", lambda *a, **kw: env)
+    monkeypatch.setattr(backend, "wrap_training_capture", lambda env, *a: env)
+
+    if fail:
+        with pytest.raises(RuntimeError, match="training failed"):
+            backend.run([])
+    else:
+        backend.run([])
+
+    if track and rank == 0:
+        expected_type = RuntimeError if fail else None
+        assert events[-3:] == ["tensorboard_close", ("wandb_finish", expected_type), "simulation_close"]
+    else:
+        assert "wandb_init" not in events
+        assert events[-1] == "simulation_close"
 
 
 def test_train_request_adapts_typed_parameters_to_cli(monkeypatch) -> None:

@@ -62,6 +62,9 @@ class ForgeEnv(FactoryEnv):
         self.pos_threshold = self.default_pos_threshold.clone()
         self.rot_threshold = self.default_rot_threshold.clone()
 
+        self._prev_noisy_fingertip_pos: torch.Tensor | None = None
+        self._prev_noisy_fingertip_quat: torch.Tensor | None = None
+
     def _compute_intermediate_values(self, dt):
         """Add noise to observations for force sensing."""
         super()._compute_intermediate_values(dt)
@@ -82,20 +85,39 @@ class ForgeEnv(FactoryEnv):
         self.noisy_fingertip_quat = quat_mul(
             self.fingertip_midpoint_quat, quat_from_angle_axis(rot_noise_angle, rot_noise_axis)
         )
+        is_peg_insert = self.cfg_task.name == "peg_insert"
+        if is_peg_insert:
+            # Preserve the full rotation for velocities; the observation projection loses yaw information.
+            velocity_quat = self.noisy_fingertip_quat * self.flip_quats.unsqueeze(-1)
         self.noisy_fingertip_quat[:, [0, 3]] = 0.0
         self.noisy_fingertip_quat = self.noisy_fingertip_quat * self.flip_quats.unsqueeze(-1)
 
-        # Repeat finite differencing with noisy fingertip positions.
-        self.ee_linvel_fd = (self.noisy_fingertip_pos - self.prev_fingertip_pos) / dt
-        self.prev_fingertip_pos = self.noisy_fingertip_pos.clone()
+        if is_peg_insert:
+            # Factory has already advanced its raw-pose history, so keep noisy samples separately.
+            first_sample = self._prev_noisy_fingertip_pos is None
+            prev_pos = self.noisy_fingertip_pos if first_sample else self._prev_noisy_fingertip_pos
+            prev_quat = velocity_quat if first_sample else self._prev_noisy_fingertip_quat
+        else:
+            prev_pos, prev_quat = self.prev_fingertip_pos, self.prev_fingertip_quat
+            velocity_quat = self.noisy_fingertip_quat
+
+        self.ee_linvel_fd = (self.noisy_fingertip_pos - prev_pos) / dt
 
         # Add state differences if velocity isn't being added.
-        rot_diff_quat = quat_mul(self.noisy_fingertip_quat, quat_conjugate(self.prev_fingertip_quat))
+        rot_diff_quat = quat_mul(velocity_quat, quat_conjugate(prev_quat))
         rot_diff_quat *= torch.sign(rot_diff_quat[:, 3]).unsqueeze(-1)  # W component is at index 3 in XYZW format
         rot_diff_aa = axis_angle_from_quat(rot_diff_quat)
         self.ee_angvel_fd = rot_diff_aa / dt
         self.ee_angvel_fd[:, 0:2] = 0.0
-        self.prev_fingertip_quat = self.noisy_fingertip_quat.clone()
+        if is_peg_insert:
+            if first_sample:
+                self.ee_linvel_fd.zero_()
+                self.ee_angvel_fd.zero_()
+            self._prev_noisy_fingertip_pos = self.noisy_fingertip_pos.clone()
+            self._prev_noisy_fingertip_quat = velocity_quat.clone()
+        else:
+            self.prev_fingertip_pos = self.noisy_fingertip_pos.clone()
+            self.prev_fingertip_quat = self.noisy_fingertip_quat.clone()
 
         # Update and smooth force values.
         self.force_sensor_world = wp.to_torch(self._robot.root_view.get_link_incoming_joint_force())[
@@ -345,6 +367,11 @@ class ForgeEnv(FactoryEnv):
         self.flip_quats = torch.ones((self.num_envs,), dtype=torch.float32, device=self.device)
         rand_flips = torch.rand(self.num_envs) > 0.5
         self.flip_quats[rand_flips] = -1.0
+
+        if self.cfg_task.name == "peg_insert":
+            # Reset simulation steps have primed the noisy history at the final reset pose.
+            self.ee_linvel_fd[env_ids] = 0.0
+            self.ee_angvel_fd[env_ids] = 0.0
 
     def _reset_buffers(self, env_ids):
         """Reset additional logging metrics."""
