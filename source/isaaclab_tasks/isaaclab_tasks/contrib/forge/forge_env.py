@@ -87,9 +87,11 @@ class ForgeEnv(FactoryEnv):
         )
         is_peg_insert = self.cfg_task.name == "peg_insert"
         if is_peg_insert:
-            # Preserve the full rotation for velocities; the observation projection loses yaw information.
+            # Preserve the full rotation for velocities before projecting the observation.
             velocity_quat = self.noisy_fingertip_quat * self.flip_quats.unsqueeze(-1)
-        self.noisy_fingertip_quat[:, [0, 3]] = 0.0
+            self.noisy_fingertip_quat[:, [2, 3]] = 0.0
+        else:
+            self.noisy_fingertip_quat[:, [0, 3]] = 0.0
         self.noisy_fingertip_quat = self.noisy_fingertip_quat * self.flip_quats.unsqueeze(-1)
 
         if is_peg_insert:

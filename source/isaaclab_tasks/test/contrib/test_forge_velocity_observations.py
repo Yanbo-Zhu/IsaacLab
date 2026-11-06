@@ -5,6 +5,7 @@
 
 """Controlled-state regression tests for FORGE velocity observations."""
 
+from math import cos, sin
 from types import SimpleNamespace
 
 from isaaclab.app import AppLauncher
@@ -115,7 +116,26 @@ def test_yaw_motion_survives_projection_and_quaternion_sign(env, flip):
     expected = torch.zeros(2, 3)
     expected[:, 2] = yaw_step / (1 / 120)
     torch.testing.assert_close(env.ee_angvel_fd, expected, atol=2e-5, rtol=1e-5)
-    assert torch.count_nonzero(env.noisy_fingertip_quat[:, [0, 3]]) == 0
+    assert torch.count_nonzero(env.noisy_fingertip_quat[:, [2, 3]]) == 0
+
+
+@pytest.mark.parametrize("task_name", ["peg_insert", "gear_mesh", "nut_thread"])
+@pytest.mark.parametrize("flip", [1.0, -1.0])
+def test_observation_projection_preserves_selected_components(env, task_name, flip):
+    env.cfg_task.name = task_name
+    env.flip_quats[:] = flip
+    full_quat = quat_from_euler_xyz(
+        torch.tensor([torch.pi - 0.2, torch.pi]), torch.tensor([0.3, 0.0]), torch.tensor([0.7, 0.0])
+    )
+    env._robot.data.body_quat_w.torch[:, 0] = full_quat
+    env._compute_intermediate_values(1 / 120)
+
+    expected = full_quat * flip
+    if task_name == "peg_insert":
+        expected[:, 2:] = 0.0
+    else:
+        expected[:, [0, 3]] = 0.0
+    torch.testing.assert_close(env.noisy_fingertip_quat, expected, atol=1e-7, rtol=1e-6)
 
 
 def test_velocity_includes_both_position_noise_samples(env, monkeypatch):
@@ -161,6 +181,9 @@ def test_velocity_includes_both_rotation_noise_samples(env, monkeypatch):
     # Local z points downward at roll=pi, so positive sensor noise gives negative world yaw.
     expected[:, 2] = -(angles[1] - angles[0]) * torch.pi / 180 / (1 / 120)
     torch.testing.assert_close(env.ee_angvel_fd, expected, atol=3e-5, rtol=1e-5)
+    noisy_yaw = 0.7 - angles[1] * torch.pi / 180
+    expected_quat = torch.tensor([cos(noisy_yaw / 2), sin(noisy_yaw / 2), 0.0, 0.0])
+    torch.testing.assert_close(env.noisy_fingertip_quat, expected_quat.repeat(2, 1), atol=1e-7, rtol=1e-6)
 
 
 @pytest.mark.parametrize("task_name", ["gear_mesh", "nut_thread"])
